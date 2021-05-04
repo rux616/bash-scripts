@@ -2,11 +2,27 @@
 
 # This is a dumb sorter:
 # - Sorts everything by section, including comments
-# - Case insensitive
-# - Duplicates not checked for
+# - Case insensitive sorting
+# - Sections are deduped
+# - Duplicates keys not checked for
+# - Fully duplicate lines are deduped
 
 set -eo pipefail
 #set -x
+
+function _decho() {
+    ${debug} && >&2 printf -- "DEBUG: %s\n" "${@}"
+    return 0
+}
+
+function _vecho() {
+    ${verbose} && >&2 printf -- "INFO: %s\n" "${@}"
+    return 0
+}
+
+# check for verbose or debugging flag
+[[ $1 == --verbose ]] && { shift; verbose=true; } || verbose=false
+[[ $1 == --debug ]] && { shift; debug=true; verbose=true; } || debug=false
 
 # do some basic checks
 [[ $# -ne 1 ]] && { printf "error: specify 1 file\n"; exit 1; }
@@ -23,40 +39,50 @@ else
     line_ending=$'\n'
 fi
 
-# get all the sections in the file
-sections_txt="$(grep -E '^\[.*]'$'\r''{0,1}$' "${1}" | tr -d '[]\r' | LC_ALL=C sort -dfV )"
-readarray -t sections < <(echo "${sections_txt}")
-
-# create arrays for each section and store the reference to them
+# read the file
 declare -a section_none
-for (( i=0; i<${#sections[@]}; i++)); do
-    declare -a section_${i}
-    section_refs["${sections[$i]}"]="${i}"
-done
-
-# read the file, each line into the array for its section
 declare -n current_section="section_none"
-while IFS= read -r line; do
-    if grep -Eq '^\[.*]'$'\r''${0,1}$' <<<"${line}"; then
-        section="$(grep -E '^\[.*]'$'\r''{0,1}$' <<<"${line}" | tr -d '[]\r')"
+declare -i section_counter=0
+while IFS= read -r line || [[ -n ${line} ]]; do
+    _vecho "line: ${line}"
+    _decho "xxd line: $(printf -- "%s" "${line}" | xxd)"
+    line="$(tr -d '\r\n' <<<"${line}")"
+    if [[ ${line} =~ ^\[.+]$ ]]; then
+        # create arrays for each section and store the reference to them
+        section="$(tr -d '[]' <<<"${line}")"
+        section="$(printf -- "%s\n" "${sections[@]}" "${section}" | LC_ALL=C sort -Vdfu | grep -ix "${section}")"
+        _vecho "new section: ${section}"
+        if [[ -z "${section_refs["${section}"]}" ]]; then
+            sections+=( "${section}" )
+            declare -a section_${section_counter}
+            section_refs["${section}"]=${section_counter}
+            section_counter+=1
+        fi
+
         declare -n current_section="section_${section_refs["${section}"]}"
     else
-        if [[ -n $(tr -d '\r\n' <<<"${line}") ]]; then
+        # if not a blank line, store it in the section's array
+        if [[ -n ${line} ]]; then
             current_section+=( "${line}" )
         fi
     fi
 done <"${1}"
 
-# print lines that have no section
-if [[ ${#section_none[@]} -gt 0 ]]; then
-    printf "%s\n" "${section_none[@]}" | LC_ALL=C sort -t '=' -k '1,1' -dfV
-    printf "%s" "${line_ending}"
-fi
+# sort the sections alphabetically and without regard for case
+readarray -t sections < <(printf "%s\n" "${sections[@]}" | LC_ALL=C sort -Vdfu)
 
-# print each section alphabetically
-for section in "${sections[@]}"; do
-    declare -n current_section="section_${section_refs["${section}"]}"
-    printf "[%s]%s" "${section}" "${line_ending}"
-    printf "%s\n" "${current_section[@]}" | LC_ALL=C sort -t '=' -k '1,1' -dfV
-    printf "%s" "${line_ending}"
-done
+{
+    # print lines that have no section
+    if [[ ${#section_none[@]} -gt 0 ]]; then
+        printf "%s${line_ending}" "${section_none[@]}" | LC_ALL=C sort -t '=' -k '1,1' -Vdfu
+        printf "%s" "${line_ending}"
+    fi
+
+    # print each section alphabetically
+    for section in "${sections[@]}"; do
+        declare -n current_section="section_${section_refs["${section}"]}"
+        printf "[%s]${line_ending}" "${section}"
+        printf "%s${line_ending}" "${current_section[@]}" | LC_ALL=C sort -t '=' -k '1,1' -Vdfu
+        printf "${line_ending}"
+    done
+} | head -n -1 -
