@@ -6,6 +6,7 @@
 # - Sections are deduped
 # - Duplicates keys not checked for
 # - Fully duplicate lines are deduped
+# - Multi-line strings are not supported
 
 set -eo pipefail
 #set -x
